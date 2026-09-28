@@ -479,10 +479,22 @@ impl SchemaValidator {
         by_alias: Option<bool>,
         by_name: Option<bool>,
     ) -> ValResult<Py<PyAny>> {
-        let json_value = jiter::JsonValue::parse_with_config(json_data, true, allow_partial)
-            .map_err(|e| json::map_json_err(input, e, json_data))?;
+        let json_value = match jiter::JsonValue::parse_with_config(json_data, true, allow_partial) {
+            Ok(json_value) => json_value,
+            Err(parse_error) => {
+                // malformed JSON: point at the byte jiter reported the syntax error at
+                let index = parse_error.index;
+                let mut error = json::map_json_err(input, parse_error, json_data);
+                if let ValError::LineErrors(line_errors) = &mut error {
+                    for line_error in line_errors {
+                        line_error.attach_json_parse_position(json_data, index);
+                    }
+                }
+                return Err(error);
+            }
+        };
         #[allow(clippy::used_underscore_items)]
-        self._validate(
+        match self._validate(
             py,
             &json_value,
             InputType::Json,
@@ -494,7 +506,16 @@ impl SchemaValidator {
             allow_partial,
             by_alias,
             by_name,
-        )
+        ) {
+            // map every line error back to its byte/line/column range in the original input
+            Err(ValError::LineErrors(mut line_errors)) => {
+                for line_error in &mut line_errors {
+                    line_error.attach_json_position(json_data, allow_partial, &json_value);
+                }
+                Err(ValError::LineErrors(line_errors))
+            }
+            other => other,
+        }
     }
 
     fn prepare_validation_err(&self, py: Python, error: ValError, input_type: InputType) -> PyErr {

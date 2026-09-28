@@ -5,10 +5,11 @@ use pyo3::CastIntoError;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
-use jiter::JsonValue;
+use jiter::{JsonValue, PartialMode};
 
 use crate::input::BorrowInput;
 use crate::input::Input;
+use crate::input::{JsonPosition, json_point_position, locate_json_position};
 
 use super::location::{LocItem, Location};
 use super::types::ErrorType;
@@ -106,6 +107,9 @@ pub struct ValLineError {
     // location is reversed so that adding an "outer" location item is pushing, it's reversed before showing to the user
     pub location: Location,
     pub input_value: InputValue,
+    /// Byte/line/column range in the original JSON input, only populated for errors raised while
+    /// validating JSON when the source document is still available.
+    pub position: Option<JsonPosition>,
 }
 
 impl ValLineError {
@@ -114,6 +118,7 @@ impl ValLineError {
             error_type,
             input_value: input.to_error_value(),
             location: Location::default(),
+            position: None,
         }
     }
 
@@ -122,6 +127,7 @@ impl ValLineError {
             error_type,
             input_value: input.to_error_value(),
             location: Location::new_some(loc.into()),
+            position: None,
         }
     }
 
@@ -130,6 +136,7 @@ impl ValLineError {
             error_type,
             input_value: input.to_error_value(),
             location,
+            position: None,
         }
     }
 
@@ -138,7 +145,28 @@ impl ValLineError {
             error_type,
             input_value,
             location: Location::default(),
+            position: None,
         }
+    }
+
+    /// Populate [`Self::position`] by locating this error in the JSON document that was parsed.
+    /// Does nothing when the fragment cannot be identified.
+    pub fn attach_json_position(&mut self, json_data: &[u8], allow_partial: PartialMode, root: &JsonValue<'_>) {
+        if self.position.is_none() {
+            self.position = locate_json_position(
+                json_data,
+                allow_partial,
+                root,
+                &self.location,
+                &self.input_value,
+                &self.error_type,
+            );
+        }
+    }
+
+    /// Populate [`Self::position`] for a JSON syntax error reported by `jiter`.
+    pub fn attach_json_parse_position(&mut self, json_data: &[u8], index: usize) {
+        self.position = Some(json_point_position(json_data, index));
     }
 
     /// location is stored reversed so it's quicker to add "outer" items as that's what we always do

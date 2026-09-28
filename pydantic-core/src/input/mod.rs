@@ -7,8 +7,11 @@ mod input_abstract;
 mod input_json;
 mod input_python;
 mod input_string;
+mod json_position;
 mod return_enums;
 mod shared;
+
+pub(crate) use json_position::{JsonPosition, locate as locate_json_position, point_at as json_point_position};
 
 pub use datetime::TzInfo;
 pub(crate) use datetime::{

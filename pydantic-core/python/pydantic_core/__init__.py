@@ -56,6 +56,7 @@ __all__ = [
     'PydanticUndefinedType',
     'SchemaError',
     'ErrorDetails',
+    'ErrorDetailsPosition',
     'InitErrorDetails',
     'ValidationError',
     'PydanticCustomError',
@@ -95,6 +96,27 @@ class ErrorDetails(_TypedDict):
     The documentation URL giving information about the error. No URL is available if
     a [`PydanticCustomError`][pydantic_core.PydanticCustomError] is used.
     """
+    position: _NotRequired[ErrorDetailsPosition]
+    """
+    The position of the error in the original JSON input, included only when
+    `ValidationError.errors(include_position=True)` is used and the input was JSON.
+    See [`ErrorDetailsPosition`][pydantic_core.ErrorDetailsPosition].
+    """
+
+
+class ErrorDetailsPosition(_TypedDict):
+    start: int
+    """Byte offset of the first byte of the offending JSON fragment."""
+    end: int
+    """Byte offset one past the last byte of the offending JSON fragment (half-open range)."""
+    start_line: int
+    """Line number of `start`, starting at 1."""
+    start_column: int
+    """Column number of `start`, starting at 1 (counts Unicode code points)."""
+    end_line: int
+    """Line number of `end`, starting at 1."""
+    end_column: int
+    """Column number of `end`, starting at 1 (counts Unicode code points)."""
 
 
 class InitErrorDetails(_TypedDict):

@@ -19,6 +19,7 @@ use crate::build_tools::py_schema_error_type;
 use crate::errors::LocItem;
 use crate::get_pydantic_version;
 use crate::input::InputType;
+use crate::input::JsonPosition;
 use crate::serializers::{Extra, SerMode, SerializationConfig, SerializationState, WarningsMode};
 use crate::tools::{SchemaDict, safe_repr, write_truncated_to_limited_bytes};
 
@@ -296,13 +297,14 @@ impl ValidationError {
         self.line_errors.len()
     }
 
-    #[pyo3(signature = (*, include_url = true, include_context = true, include_input = true))]
+    #[pyo3(signature = (*, include_url = true, include_context = true, include_input = true, include_position = false))]
     pub fn errors(
         &self,
         py: Python,
         include_url: bool,
         include_context: bool,
         include_input: bool,
+        include_position: bool,
     ) -> PyResult<Py<PyList>> {
         let url_prefix = get_url_prefix(py, include_url);
         let mut iteration_error = None;
@@ -315,14 +317,21 @@ impl ValidationError {
                 if iteration_error.is_some() {
                     return py.None();
                 }
-                e.as_dict(py, url_prefix, include_context, self.input_type, include_input)
-                    .map_or_else(
-                        |err| {
-                            iteration_error = Some(err);
-                            py.None()
-                        },
-                        Into::into,
-                    )
+                e.as_dict(
+                    py,
+                    url_prefix,
+                    include_context,
+                    self.input_type,
+                    include_input,
+                    include_position,
+                )
+                .map_or_else(
+                    |err| {
+                        iteration_error = Some(err);
+                        py.None()
+                    },
+                    Into::into,
+                )
             }),
         )?;
         if let Some(err) = iteration_error {
@@ -332,7 +341,7 @@ impl ValidationError {
         }
     }
 
-    #[pyo3(signature = (*, indent = None, include_url = true, include_context = true, include_input = true))]
+    #[pyo3(signature = (*, indent = None, include_url = true, include_context = true, include_input = true, include_position = false))]
     pub fn json<'py>(
         &self,
         py: Python<'py>,
@@ -340,6 +349,7 @@ impl ValidationError {
         include_url: bool,
         include_context: bool,
         include_input: bool,
+        include_position: bool,
     ) -> PyResult<Bound<'py, PyString>> {
         let config = SerializationConfig::default();
         let extra = Extra::new(
@@ -364,6 +374,7 @@ impl ValidationError {
             url_prefix: get_url_prefix(py, include_url),
             include_context,
             include_input,
+            include_position,
             state: &mut state,
             input_type: &self.input_type,
         };
@@ -401,7 +412,7 @@ impl ValidationError {
         let borrow = slf.try_borrow()?;
         let args = (
             &borrow.title,
-            borrow.errors(py, include_url_env(py), true, true)?,
+            borrow.errors(py, include_url_env(py), true, true, true)?,
             borrow.input_type,
             borrow.hide_input,
         )
@@ -424,6 +435,98 @@ pub fn pretty_py_line_errors<'a>(
         .join("\n")
 }
 
+/// Position of an error in the original JSON input, see
+/// [`ValidationError::errors`] with `include_position=True`.
+#[pyclass(
+    module = "pydantic_core._pydantic_core",
+    frozen,
+    name = "LineErrorPosition",
+    skip_from_py_object
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+pub struct PyLineErrorPosition(JsonPosition);
+
+#[pymethods]
+impl PyLineErrorPosition {
+    /// Byte offset of the first byte of the fragment.
+    #[getter]
+    fn start(&self) -> usize {
+        self.0.start
+    }
+
+    /// Byte offset one past the last byte of the fragment.
+    #[getter]
+    fn end(&self) -> usize {
+        self.0.end
+    }
+
+    /// Line number of `start`, starting at 1.
+    #[getter]
+    fn start_line(&self) -> usize {
+        self.0.start_line
+    }
+
+    /// Column number of `start`, starting at 1 (counts Unicode code points).
+    #[getter]
+    fn start_column(&self) -> usize {
+        self.0.start_column
+    }
+
+    /// Line number of `end`, starting at 1.
+    #[getter]
+    fn end_line(&self) -> usize {
+        self.0.end_line
+    }
+
+    /// Column number of `end`, starting at 1 (counts Unicode code points).
+    #[getter]
+    fn end_column(&self) -> usize {
+        self.0.end_column
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "LineErrorPosition(start={}, end={}, start_line={}, start_column={}, end_line={}, end_column={})",
+            self.0.start, self.0.end, self.0.start_line, self.0.start_column, self.0.end_line, self.0.end_column
+        )
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PyLineErrorPosition {
+    fn as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        let position = self.0;
+        dict.set_item("start", position.start)?;
+        dict.set_item("end", position.end)?;
+        dict.set_item("start_line", position.start_line)?;
+        dict.set_item("start_column", position.start_column)?;
+        dict.set_item("end_line", position.end_line)?;
+        dict.set_item("end_column", position.end_column)?;
+        Ok(dict)
+    }
+
+    fn from_dict(dict: &Bound<'_, PyDict>) -> PyResult<Self> {
+        fn get(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<usize> {
+            dict.get_item(key)?
+                .ok_or_else(|| PyTypeError::new_err(format!("position missing `{key}`")))?
+                .extract()
+        }
+        Ok(Self(JsonPosition {
+            start: get(dict, "start")?,
+            end: get(dict, "end")?,
+            start_line: get(dict, "start_line")?,
+            start_column: get(dict, "start_column")?,
+            end_line: get(dict, "end_line")?,
+            end_column: get(dict, "end_column")?,
+        }))
+    }
+}
+
 /// `PyLineError` are the public version of `ValLineError`, as help and used in `ValidationError`s
 #[pyclass(from_py_object)]
 #[derive(Clone)]
@@ -432,6 +535,7 @@ pub struct PyLineError {
     error_type: ErrorType,
     location: Location,
     input_value: Py<PyAny>,
+    position: Option<PyLineErrorPosition>,
 }
 
 impl From<PyLineError> for ValLineError {
@@ -441,6 +545,8 @@ impl From<PyLineError> for ValLineError {
             error_type: other.error_type,
             location: other.location,
             input_value: InputValue::Python(other.input_value),
+            // positions refer to the original input and are invalid after re-validation
+            position: None,
         }
     }
 }
@@ -474,11 +580,27 @@ impl TryFrom<&Bound<'_, PyAny>> for PyLineError {
             None => py.None(),
         };
 
+        let position = match dict.get_item("position")? {
+            Some(position_dict) => Some(PyLineErrorPosition::from_dict(position_dict.cast::<PyDict>()?)?),
+            None => None,
+        };
+
         Ok(Self {
             error_type,
             location,
             input_value,
+            position,
         })
+    }
+}
+
+#[pymethods]
+impl PyLineError {
+    /// Position of this error in the original JSON input, or `None` when not available
+    /// (e.g. for errors from Python inputs or when `include_position` was not used).
+    #[getter]
+    fn position(&self) -> Option<PyLineErrorPosition> {
+        self.position
     }
 }
 
@@ -488,6 +610,7 @@ impl PyLineError {
             error_type: error.error_type,
             location: error.location,
             input_value: error.input_value.into_pyobject(py)?.unbind(),
+            position: error.position.map(PyLineErrorPosition),
         })
     }
 
@@ -502,6 +625,7 @@ impl PyLineError {
         include_context: bool,
         input_type: InputType,
         include_input: bool,
+        include_position: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         dict.set_item("type", self.error_type.type_string())?;
@@ -512,6 +636,9 @@ impl PyLineError {
         }
         if include_context && let Some(context) = self.error_type.py_dict(py)? {
             dict.set_item("ctx", context)?;
+        }
+        if include_position && let Some(position) = self.position {
+            dict.set_item("position", position.as_dict(py)?)?;
         }
         if let Some(url_prefix) = url_prefix
             // Don't add URLs for custom errors
@@ -581,6 +708,7 @@ struct ValidationErrorSerializer<'slf, 'py> {
     url_prefix: Option<&'py str>,
     include_context: bool,
     include_input: bool,
+    include_position: bool,
     state: &'slf mut SerializationState<'py>,
     input_type: &'py InputType,
 }
@@ -598,6 +726,7 @@ impl ValidationErrorSerializer<'_, '_> {
                 url_prefix: self.url_prefix,
                 include_context: self.include_context,
                 include_input: self.include_input,
+                include_position: self.include_position,
                 state: RefCell::new(self.state),
                 input_type: self.input_type,
             };
@@ -613,6 +742,7 @@ struct PyLineErrorSerializer<'slf, 'py> {
     url_prefix: Option<&'py str>,
     include_context: bool,
     include_input: bool,
+    include_position: bool,
     state: RefCell<&'slf mut SerializationState<'py>>,
     input_type: &'py InputType,
 }
@@ -623,10 +753,16 @@ impl Serialize for PyLineErrorSerializer<'_, '_> {
         S: Serializer,
     {
         let py = self.py;
-        let size = 3 + [self.url_prefix.is_some(), self.include_context, self.include_input]
-            .into_iter()
-            .filter(|b| *b)
-            .count();
+        let has_position = self.include_position && self.line_error.position.is_some();
+        let size = 3 + [
+            self.url_prefix.is_some(),
+            self.include_context,
+            self.include_input,
+            has_position,
+        ]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
         let mut map = serializer.serialize_map(Some(size))?;
         let mut state = self.state.borrow_mut();
 
@@ -650,9 +786,34 @@ impl Serialize for PyLineErrorSerializer<'_, '_> {
         {
             map.serialize_entry("ctx", &state.serialize_infer(context.bind(py)))?;
         }
+        if has_position {
+            map.serialize_entry(
+                "position",
+                &LineErrorPositionSerializer(self.line_error.position.unwrap().0),
+            )?;
+        }
         if let Some(url_prefix) = self.url_prefix {
             map.serialize_entry("url", &self.line_error.get_error_url(url_prefix))?;
         }
+        map.end()
+    }
+}
+
+struct LineErrorPositionSerializer(JsonPosition);
+
+impl Serialize for LineErrorPositionSerializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let p = self.0;
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("start", &p.start)?;
+        map.serialize_entry("end", &p.end)?;
+        map.serialize_entry("start_line", &p.start_line)?;
+        map.serialize_entry("start_column", &p.start_column)?;
+        map.serialize_entry("end_line", &p.end_line)?;
+        map.serialize_entry("end_column", &p.end_column)?;
         map.end()
     }
 }

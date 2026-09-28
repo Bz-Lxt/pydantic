@@ -22,6 +22,7 @@ __all__ = [
     'MultiHostUrl',
     'SchemaError',
     'ValidationError',
+    'LineErrorPosition',
     'PydanticCustomError',
     'PydanticKnownError',
     'PydanticOmit',
@@ -752,7 +753,12 @@ class ValidationError(ValueError):
             The number of errors in the validation error.
         """
     def errors(
-        self, *, include_url: bool = True, include_context: bool = True, include_input: bool = True
+        self,
+        *,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+        include_position: bool = False,
     ) -> list[ErrorDetails]:
         """
         Details about each error in the validation error.
@@ -761,6 +767,9 @@ class ValidationError(ValueError):
             include_url: Whether to include a URL to documentation on the error each error.
             include_context: Whether to include the context of each error.
             include_input: Whether to include the input value of each error.
+            include_position: Whether to include the byte/line/column position of each error in
+                the original JSON input. Positions are only present for errors raised while
+                validating JSON; errors from Python inputs get no `position` key.
 
         Returns:
             A list of [`ErrorDetails`][pydantic_core.ErrorDetails] for each error in the validation error.
@@ -772,6 +781,7 @@ class ValidationError(ValueError):
         include_url: bool = True,
         include_context: bool = True,
         include_input: bool = True,
+        include_position: bool = False,
     ) -> str:
         """
         Same as [`errors()`][pydantic_core.ValidationError.errors] but returns a JSON string.
@@ -781,6 +791,9 @@ class ValidationError(ValueError):
             include_url: Whether to include a URL to documentation on the error each error.
             include_context: Whether to include the context of each error.
             include_input: Whether to include the input value of each error.
+            include_position: Whether to include the byte/line/column position of each error in
+                the original JSON input. Positions are only present for errors raised while
+                validating JSON; errors from Python inputs get no `position` key.
 
         Returns:
             a JSON string.
@@ -797,6 +810,33 @@ class ValidationError(ValueError):
         Due to implementation details, this environment variable can only be set once,
         before the first validation error is created.
         """
+
+@final
+class LineErrorPosition:
+    """Position of an error in the original JSON input.
+
+    Accessible on individual line errors and returned as a plain dict by
+    [`ValidationError.errors(include_position=True)`][pydantic_core.ValidationError.errors].
+    """
+
+    @property
+    def start(self) -> int:
+        """Byte offset of the first byte of the offending JSON fragment."""
+    @property
+    def end(self) -> int:
+        """Byte offset one past the last byte of the offending JSON fragment (half-open range)."""
+    @property
+    def start_line(self) -> int:
+        """Line number of `start`, starting at 1."""
+    @property
+    def start_column(self) -> int:
+        """Column number of `start`, starting at 1 (counts Unicode code points)."""
+    @property
+    def end_line(self) -> int:
+        """Line number of `end`, starting at 1."""
+    @property
+    def end_column(self) -> int:
+        """Column number of `end`, starting at 1 (counts Unicode code points)."""
 
 class PydanticCustomError(ValueError):
     """A custom exception providing flexible error handling for Pydantic validators.

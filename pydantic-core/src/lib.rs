@@ -34,7 +34,8 @@ pub use self::url::{PyMultiHostUrl, PyUrl};
 pub use argument_markers::{ArgsKwargs, PydanticUndefinedType};
 pub use build_tools::SchemaError;
 pub use errors::{
-    PydanticCustomError, PydanticKnownError, PydanticOmit, PydanticUseDefault, ValidationError, list_all_errors,
+    PyLineErrorPosition, PydanticCustomError, PydanticKnownError, PydanticOmit, PydanticUseDefault, ValidationError,
+    list_all_errors,
 };
 pub use serializers::{
     PydanticSerializationError, PydanticSerializationUnexpectedValue, SchemaSerializer, WarningsArg, to_json,
@@ -114,10 +115,10 @@ pub mod _pydantic_core {
 
     #[pymodule_export]
     use crate::{
-        ArgsKwargs, PyMultiHostUrl, PySome, PyUrl, PydanticCustomError, PydanticKnownError, PydanticOmit,
-        PydanticSerializationError, PydanticSerializationUnexpectedValue, PydanticUndefinedType, PydanticUseDefault,
-        SchemaError, SchemaSerializer, SchemaValidator, TzInfo, ValidationError, from_json, list_all_errors, to_json,
-        to_jsonable_python,
+        ArgsKwargs, PyLineErrorPosition, PyMultiHostUrl, PySome, PyUrl, PydanticCustomError, PydanticKnownError,
+        PydanticOmit, PydanticSerializationError, PydanticSerializationUnexpectedValue, PydanticUndefinedType,
+        PydanticUseDefault, SchemaError, SchemaSerializer, SchemaValidator, TzInfo, ValidationError, from_json,
+        list_all_errors, to_json, to_jsonable_python,
     };
 
     #[pymodule]
