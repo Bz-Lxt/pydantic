@@ -6108,29 +6108,84 @@ def test_multiple_models_with_same_qualname():
     )
 
     # insert_assert(model_c.model_json_schema())
+    # The occurrence suffixes are assigned deterministically by schema content (not creation order):
+    # the model with field ``inner_a2`` sorts before the one with ``inner_a1``.
     assert model_c.model_json_schema() == {
         '$defs': {
             'tests__test_json_schema__A__1': {
-                'properties': {'inner_a1': {'title': 'Inner A1', 'type': 'string'}},
-                'required': ['inner_a1'],
-                'title': 'A',
-                'type': 'object',
-            },
-            'tests__test_json_schema__A__2': {
                 'properties': {'inner_a2': {'title': 'Inner A2', 'type': 'string'}},
                 'required': ['inner_a2'],
                 'title': 'A',
                 'type': 'object',
             },
+            'tests__test_json_schema__A__2': {
+                'properties': {'inner_a1': {'title': 'Inner A1', 'type': 'string'}},
+                'required': ['inner_a1'],
+                'title': 'A',
+                'type': 'object',
+            },
         },
         'properties': {
-            'outer_a1': {'$ref': '#/$defs/tests__test_json_schema__A__1'},
-            'outer_a2': {'$ref': '#/$defs/tests__test_json_schema__A__2'},
+            'outer_a1': {'$ref': '#/$defs/tests__test_json_schema__A__2'},
+            'outer_a2': {'$ref': '#/$defs/tests__test_json_schema__A__1'},
         },
         'required': ['outer_a1', 'outer_a2'],
         'title': 'B',
         'type': 'object',
     }
+
+
+def test_stable_refs_for_same_qualname_recursive_models():
+    """Recursive models sharing module + qualname must get refs based on schema content.
+
+    The per-model refs must not change when the input order changes; genuinely different
+    same-named schemas must remain distinguishable; logically equivalent schemas must be
+    merged into a single definition; and custom ref templates must keep working.
+    """
+
+    def make_recursive(typ):
+        class Node(BaseModel):
+            value: typ
+            children: list['Node'] = []
+        Node.model_rebuild()
+        return Node
+
+    # 1. Genuinely different schemas: reversing the input order must not change any ref.
+    distinct_a = make_recursive(int)
+    distinct_b = make_recursive(str)
+
+    map_forward, schema_forward = models_json_schema(
+        [(distinct_a, 'validation'), (distinct_b, 'validation')]
+    )
+    map_reverse, schema_reverse = models_json_schema(
+        [(distinct_b, 'validation'), (distinct_a, 'validation')]
+    )
+    assert schema_forward == schema_reverse
+    assert map_forward[(distinct_a, 'validation')] == map_reverse[(distinct_a, 'validation')]
+    assert map_forward[(distinct_b, 'validation')] == map_reverse[(distinct_b, 'validation')]
+    assert len(schema_forward['$defs']) == 2  # the two structures stay distinguishable
+
+    # 2. Logically equivalent recursive schemas are merged into one definition.
+    equiv_a = make_recursive(int)
+    equiv_b = make_recursive(int)
+    equiv_map, equiv_schema = models_json_schema(
+        [(equiv_a, 'validation'), (equiv_b, 'validation')]
+    )
+    assert equiv_map[(equiv_a, 'validation')] == equiv_map[(equiv_b, 'validation')]
+    assert equiv_map[(equiv_a, 'validation')] == {'$ref': '#/$defs/Node'}
+    assert list(equiv_schema['$defs']) == ['Node']
+
+    # 3. Custom ref templates keep working, and remain stable across input orders.
+    template = '#/components/schemas/{model}'
+    custom_forward, _ = models_json_schema(
+        [(distinct_a, 'validation'), (distinct_b, 'validation')], ref_template=template
+    )
+    custom_reverse, _ = models_json_schema(
+        [(distinct_b, 'validation'), (distinct_a, 'validation')], ref_template=template
+    )
+    assert custom_forward[(distinct_a, 'validation')] == custom_reverse[(distinct_a, 'validation')]
+    assert custom_forward[(distinct_b, 'validation')] == custom_reverse[(distinct_b, 'validation')]
+    assert custom_forward[(distinct_a, 'validation')]['$ref'].startswith('#/components/schemas/')
 
 
 def test_generate_definitions_for_no_ref_schemas():

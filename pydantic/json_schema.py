@@ -13,6 +13,7 @@ from __future__ import annotations as _annotations
 
 import collections.abc
 import dataclasses
+import hashlib
 import inspect
 import math
 import os
@@ -147,6 +148,202 @@ class _DefinitionsRemapping:
     ) -> _DefinitionsRemapping:
         """
         This function should produce a remapping that replaces complex DefsRef with the simpler ones from the
+        prioritized_choices such that applying the name remapping would result in an equivalent JSON schema.
+
+        The fully-unique DefsRef (the keys of ``definitions``) contain an occurrence index that is assigned
+        in the order the core refs are encountered, making the refs dependent on input/rebuild order and on
+        the (process-specific) object ids used to build the core refs. To get stable identifiers for logically
+        equivalent schemas, while keeping genuinely different same-named schemas distinguishable, we:
+
+        1. compute content-based canonical labels via partition refinement, treating the generated
+           definitions as binders (so recursive graphs are compared up to alpha-renaming);
+        2. deterministically renumber the occurrences within each collision group by those labels, merging
+           definitions that are equivalent;
+        3. run the fixed-point simplification on the renumbered definitions.
+
+        The returned remapping is expressed in terms of the *original* (input) refs.
+        """
+        if not definitions:
+            return _DefinitionsRemapping({}, {})
+
+        json_to_defs: dict[JsonRef, DefsRef] = {
+            json_ref: defs_ref for defs_ref, json_ref in defs_to_json.items()
+        }
+
+        # 1. Canonical equivalence labels. Two definitions get the same label iff their schema graphs are
+        # equivalent up to renaming of internal definitions (bisimulation over the recursive graph).
+        def schema_encoding(schema: Any, labels: dict[DefsRef, str]) -> Any:
+            if isinstance(schema, dict):
+                ref = schema.get('$ref')
+                if isinstance(ref, str):
+                    target = json_to_defs.get(JsonRef(ref))
+                    if target is not None and target in labels:
+                        return 'ref:', labels[target]
+                    # External refs (http(s), user-provided inline defs, etc.) are literals.
+                    return 'ref:', ref
+                return 'obj:', tuple(sorted((k, schema_encoding(v, labels)) for k, v in schema.items()))
+            elif isinstance(schema, list):
+                return 'arr:', tuple(schema_encoding(v, labels) for v in schema)
+            else:
+                return 'val:', schema
+
+        labels = {defs_ref: '' for defs_ref in definitions}
+
+        def label_partition(current_labels: dict[DefsRef, str]) -> frozenset[frozenset[DefsRef]]:
+            groups: dict[str, list[DefsRef]] = defaultdict(list)
+            for defs_ref, label in current_labels.items():
+                groups[label].append(defs_ref)
+            return frozenset(frozenset(keys) for keys in groups.values())
+
+        partition = label_partition(labels)
+        for _ in range(100):  # bounded refinement; converges in at most len(definitions)+1 rounds
+            new_labels = {
+                defs_ref: hashlib.sha1(repr(schema_encoding(schema, labels)).encode()).hexdigest()
+                for defs_ref, schema in definitions.items()
+            }
+            new_partition = label_partition(new_labels)
+            labels = new_labels
+            if new_partition == partition:
+                break
+            partition = new_partition
+        else:  # pragma: no cover
+            raise PydanticInvalidForJsonSchema('Failed to simplify the JSON schema definitions')
+
+        # 2. Deterministic occurrence renumbering. Collision groups are identified from the prioritized
+        # choices: [name, name_mode, module_qualname, module_qualname_mode, ...__N, ...__N-mode].
+        groups: dict[tuple[DefsRef, str], list[DefsRef]] = defaultdict(list)
+        for defs_ref in definitions:
+            choices = prioritized_choices[defs_ref]
+            mode_title = choices[3][len(choices[2]) :].lstrip('-')
+            groups[(choices[2], mode_title)].append(defs_ref)
+
+        # Initially, give members of each equivalence class a shared rank, blocks ordered by label.
+        # If genuinely different schemas collide after rewriting, the classes are split (deterministically,
+        # by their rewritten content) until every resulting key holds exactly one schema.
+        ranks: dict[DefsRef, int] = {}
+        for members in groups.values():
+            ordered_labels = sorted({labels[m] for m in members})
+            for member in members:
+                ranks[member] = ordered_labels.index(labels[member]) + 1
+
+        def build_remapping(
+            current_ranks: dict[DefsRef, int],
+        ) -> tuple[dict[DefsRef, DefsRef], dict[JsonRef, JsonRef], dict[DefsRef, JsonSchemaValue], list[DefsRef]]:
+            current_defs_remap: dict[DefsRef, DefsRef] = {}
+            for (module_qualname, _mode_title), members in groups.items():
+                for member in members:
+                    new_key = DefsRef(f'{prioritized_choices[member][3]}__{current_ranks[member]}')
+                    current_defs_remap[member] = new_key
+
+            current_json_remap: dict[JsonRef, JsonRef] = {
+                defs_to_json[old]: defs_to_json[new] for old, new in current_defs_remap.items()
+            }
+            phase_remapping = _DefinitionsRemapping(current_defs_remap, current_json_remap)
+
+            rewritten_definitions: dict[DefsRef, JsonSchemaValue] = {}
+            conflicting_keys: set[DefsRef] = set()
+            for old_defs_ref, old_schema in definitions.items():
+                new_defs_ref = current_defs_remap[old_defs_ref]
+                new_schema = phase_remapping.remap_json_schema(deepcopy(old_schema))
+                existing = rewritten_definitions.get(new_defs_ref)
+                if existing is not None and existing != new_schema:
+                    conflicting_keys.add(new_defs_ref)
+                else:
+                    rewritten_definitions[new_defs_ref] = new_schema
+            return current_defs_remap, current_json_remap, rewritten_definitions, list(conflicting_keys)
+
+        defs_remap, json_remap, rewritten_definitions, conflicts = build_remapping(ranks)
+        for _ in range(100):  # bounded splitting loop
+            if not conflicts:
+                break
+
+            # Members sharing a conflicting key have the same label but unequal rewritten content.
+            # Split them, deterministically ordering by the rewritten content, then renumber the
+            # whole collision group: blocks ordered by label, one block per distinct member inside
+            # the conflicting label.
+            conflicting_set = set(conflicts)
+            for (module_qualname, mode_title), members in groups.items():
+                affected = [m for m in members if defs_remap[m] in conflicting_set]
+                if not affected:
+                    continue
+
+                current_remapping = _DefinitionsRemapping(defs_remap, json_remap)
+                content_order = sorted(
+                    affected,
+                    key=lambda m: _make_json_hashable(
+                        cast(
+                            JsonDict,
+                            current_remapping.remap_json_schema(deepcopy(definitions[m])),
+                        )
+                    ),
+                )
+
+                ordered_blocks: list[list[DefsRef]] = []
+                for label in sorted({labels[m] for m in members}):
+                    block_members = sorted(m for m in members if labels[m] == label)
+                    if any(labels[a] == label for a in affected):
+                        split_members = [m for m in content_order if labels[m] == label]
+                        split_members += [m for m in block_members if m not in split_members]
+                        ordered_blocks.extend([m] for m in split_members)
+                    else:
+                        ordered_blocks.append(block_members)
+                for index, block in enumerate(ordered_blocks, start=1):
+                    for member in block:
+                        ranks[member] = index
+
+            defs_remap, json_remap, rewritten_definitions, conflicts = build_remapping(ranks)
+        else:  # pragma: no cover
+            raise PydanticInvalidForJsonSchema('Failed to simplify the JSON schema definitions')
+
+        # Rebuild the prioritized choices for the renumbered keys.
+        representatives: dict[DefsRef, DefsRef] = {}
+        for old_defs_ref, new_defs_ref in defs_remap.items():
+            current = representatives.get(new_defs_ref)
+            if current is None or old_defs_ref < current:
+                representatives[new_defs_ref] = old_defs_ref
+
+        renumbered_choices: dict[DefsRef, list[DefsRef]] = {}
+        for new_defs_ref, rep_defs_ref in representatives.items():
+            rep_choices = prioritized_choices[rep_defs_ref]
+            occurrence = ranks[rep_defs_ref]
+            renumbered_choices[new_defs_ref] = [
+                rep_choices[0],
+                rep_choices[1],
+                rep_choices[2],
+                rep_choices[3],
+                DefsRef(f'{rep_choices[2]}__{occurrence}'),
+                new_defs_ref,
+            ]
+
+        # 3. Simplify the renumbered definitions until the simplest unambiguous names are reached.
+        simplification = _DefinitionsRemapping._simplify_prioritized_choices(
+            renumbered_choices, defs_to_json, rewritten_definitions
+        )
+
+        # Compose the renumbering with the simplification, mapping original refs to final refs.
+        final_defs_remap: dict[DefsRef, DefsRef] = {
+            old_defs_ref: simplification.remap_defs_ref(new_defs_ref)
+            for old_defs_ref, new_defs_ref in defs_remap.items()
+        }
+        final_json_remap: dict[JsonRef, JsonRef] = {}
+        for old_defs_ref in definitions:
+            choices = prioritized_choices[old_defs_ref]
+            new_defs_ref = defs_remap[old_defs_ref]
+            new_choices = renumbered_choices[new_defs_ref]
+            for old_alt, new_alt in zip(choices, new_choices):
+                final_json_remap[defs_to_json[old_alt]] = simplification.remap_json_ref(
+                    defs_to_json[new_alt]
+                )
+        return _DefinitionsRemapping(final_defs_remap, final_json_remap)
+
+    @staticmethod
+    def _simplify_prioritized_choices(
+        prioritized_choices: dict[DefsRef, list[DefsRef]],
+        defs_to_json: dict[DefsRef, JsonRef],
+        definitions: dict[DefsRef, JsonSchemaValue],
+    ) -> _DefinitionsRemapping:
+        """
+        Produce a remapping that replaces complex DefsRef with the simpler ones from the
         prioritized_choices such that applying the name remapping would result in an equivalent JSON schema.
         """
         # We need to iteratively simplify the definitions until we reach a fixed point.
