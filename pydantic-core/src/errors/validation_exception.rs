@@ -9,11 +9,13 @@ use pyo3::ffi::{self, c_str};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple, PyType};
 use serde::ser::{Error, SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
 use serde_json::ser::PrettyFormatter;
+
+use ahash::AHashMap;
 
 use crate::build_tools::py_schema_error_type;
 use crate::errors::LocItem;
@@ -56,17 +58,27 @@ impl ValidationError {
         outer_location: Option<LocItem>,
         hide_input: bool,
         validation_error_cause: bool,
+        freeze_input_on_error: bool,
     ) -> PyErr {
         match error {
             ValError::LineErrors(raw_errors) => {
+                // one freezer is shared by all line errors so shared sub-objects stay
+                // shared even across different errors of the same ValidationError
+                let mut freezer = freeze_input_on_error.then(ErrorInputFreezer::new);
                 let line_errors = match outer_location {
                     Some(outer_location) => raw_errors
                         .into_iter()
-                        .map(|e| PyLineError::from_val_line_error(py, e.with_outer_location(outer_location.clone())))
+                        .map(|e| {
+                            PyLineError::from_val_line_error(
+                                py,
+                                e.with_outer_location(outer_location.clone()),
+                                freezer.as_mut(),
+                            )
+                        })
                         .collect(),
                     None => raw_errors
                         .into_iter()
-                        .map(|e| PyLineError::from_val_line_error(py, e))
+                        .map(|e| PyLineError::from_val_line_error(py, e, freezer.as_mut()))
                         .collect(),
                 };
                 let line_errors = match line_errors {
@@ -483,11 +495,32 @@ impl TryFrom<&Bound<'_, PyAny>> for PyLineError {
 }
 
 impl PyLineError {
-    pub fn from_val_line_error(py: Python, error: ValLineError) -> PyResult<Self> {
+    pub(crate) fn from_val_line_error(
+        py: Python,
+        error: ValLineError,
+        freezer: Option<&mut ErrorInputFreezer>,
+    ) -> PyResult<Self> {
+        let ValLineError {
+            error_type,
+            location,
+            input_value,
+        } = error;
+        let input_value = match input_value {
+            // JSON inputs are already owned, immutable snapshots
+            json @ InputValue::Json(_) => json.into_pyobject(py)?.unbind(),
+            InputValue::Python(input) => match freezer {
+                Some(freezer) => match freezer.freeze(py, input.bind(py)) {
+                    Ok(frozen_input) => frozen_input,
+                    // don't mask the validation error itself if freezing the input failed
+                    Err(_) => input,
+                },
+                None => input,
+            },
+        };
         Ok(Self {
-            error_type: error.error_type,
-            location: error.location,
-            input_value: error.input_value.into_pyobject(py)?.unbind(),
+            error_type,
+            location,
+            input_value,
         })
     }
 
@@ -561,6 +594,135 @@ impl PyLineError {
             )?;
         }
         Ok(output)
+    }
+}
+
+static MAPPING_PROXY_TYPE: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+fn get_mapping_proxy_type(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    MAPPING_PROXY_TYPE.import(py, "types", "MappingProxyType")
+}
+
+/// Recursively replaces mutable containers in a Python object graph with immutable
+/// equivalents at the moment validation fails:
+/// * `dict`  -> `types.MappingProxyType` over a copied dict
+/// * `list`  -> `tuple`
+/// * `set`   -> `frozenset`
+/// * `tuple` and `frozenset` are rebuilt with their contents frozen
+///
+/// Scalars and arbitrary other objects are kept as-is.
+///
+/// The memo maps each original object's pointer to its frozen copy, like
+/// `copy.deepcopy`'s memo: shared sub-objects stay shared and reference cycles
+/// are broken. Sequences are built as tuples through the C API so that the
+/// under-construction tuple can already be put into the memo (a tuple is
+/// immutable from Python, but its slots are writable while being built).
+pub(crate) struct ErrorInputFreezer {
+    memo: AHashMap<usize, Py<PyAny>>,
+}
+
+impl ErrorInputFreezer {
+    fn new() -> Self {
+        Self { memo: AHashMap::new() }
+    }
+
+    fn freeze(&mut self, py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let key = obj.as_ptr() as usize;
+        if let Some(frozen) = self.memo.get(&key) {
+            return Ok(frozen.clone_ref(py));
+        }
+        // exact types only: subclasses (namedtuples, custom container subclasses...) are left as-is
+        if obj.is_instance_of::<PyDict>() {
+            self.freeze_dict(py, obj.cast::<PyDict>()?, key)
+        } else if obj.is_instance_of::<PyList>() {
+            self.freeze_list(py, obj.cast::<PyList>()?, key)
+        } else if obj.is_instance_of::<PyTuple>() {
+            self.freeze_tuple(py, obj.cast::<PyTuple>()?, key)
+        } else if obj.is_instance_of::<PySet>() {
+            self.freeze_set(py, obj.cast::<PySet>()?, key)
+        } else if obj.is_instance_of::<PyFrozenSet>() {
+            self.freeze_frozenset(py, obj.cast::<PyFrozenSet>()?, key)
+        } else {
+            // immutable scalars and arbitrary user objects: keep as-is
+            Ok(obj.clone().unbind())
+        }
+    }
+
+    fn freeze_dict(&mut self, py: Python<'_>, dict: &Bound<'_, PyDict>, key: usize) -> PyResult<Py<PyAny>> {
+        let inner = PyDict::new(py);
+        // memoize the proxy before populating it, so cycles closing through this
+        // dict reference the immutable proxy rather than the underlying dict
+        let proxy = get_mapping_proxy_type(py)?.call1((&inner,))?.unbind();
+        self.memo.insert(key, proxy.clone_ref(py));
+        for (raw_key, raw_value) in dict.iter() {
+            let frozen_key = self.freeze(py, &raw_key)?;
+            let frozen_value = self.freeze(py, &raw_value)?;
+            inner.set_item(frozen_key, frozen_value)?;
+        }
+        Ok(proxy)
+    }
+
+    fn freeze_list(&mut self, py: Python<'_>, list: &Bound<'_, PyList>, key: usize) -> PyResult<Py<PyAny>> {
+        // allocate the result tuple and memoize it before freezing the items,
+        // so self-references resolve to this under-construction tuple
+        let tuple = Self::new_empty_tuple(py, list.len())?;
+        self.memo.insert(key, tuple.clone_ref(py));
+        for (index, item) in list.iter().enumerate() {
+            let frozen_item = self.freeze(py, &item)?;
+            // PyTuple_SET_ITEM steals the reference
+            unsafe {
+                ffi::PyTuple_SET_ITEM(tuple.as_ptr(), index as ffi::Py_ssize_t, frozen_item.into_ptr());
+            }
+        }
+        Ok(tuple)
+    }
+
+    fn freeze_tuple(&mut self, py: Python<'_>, tuple: &Bound<'_, PyTuple>, key: usize) -> PyResult<Py<PyAny>> {
+        let result = Self::new_empty_tuple(py, tuple.len())?;
+        self.memo.insert(key, result.clone_ref(py));
+        for (index, item) in tuple.iter().enumerate() {
+            let frozen_item = self.freeze(py, &item)?;
+            unsafe {
+                ffi::PyTuple_SET_ITEM(result.as_ptr(), index as ffi::Py_ssize_t, frozen_item.into_ptr());
+            }
+        }
+        Ok(result)
+    }
+
+    fn new_empty_tuple(py: Python<'_>, len: usize) -> PyResult<Py<PyAny>> {
+        let ptr = unsafe { ffi::PyTuple_New(len as ffi::Py_ssize_t) };
+        if ptr.is_null() {
+            Err(PyErr::fetch(py))
+        } else {
+            Ok(unsafe { Bound::from_owned_ptr(py, ptr).unbind() })
+        }
+    }
+
+    fn freeze_set(&mut self, py: Python<'_>, set: &Bound<'_, PySet>, key: usize) -> PyResult<Py<PyAny>> {
+        // set elements are hashable and cannot reference this unhashable set, so
+        // freeze the elements first and memoize the result afterwards
+        let frozen_elements: Vec<Py<PyAny>> = set
+            .iter()
+            .map(|element| self.freeze(py, &element))
+            .collect::<PyResult<_>>()?;
+        let result = PyFrozenSet::new(py, frozen_elements.iter())?.into_any().unbind();
+        self.memo.insert(key, result.clone_ref(py));
+        Ok(result)
+    }
+
+    fn freeze_frozenset(
+        &mut self,
+        py: Python<'_>,
+        frozenset: &Bound<'_, PyFrozenSet>,
+        key: usize,
+    ) -> PyResult<Py<PyAny>> {
+        let frozen_elements: Vec<Py<PyAny>> = frozenset
+            .iter()
+            .map(|element| self.freeze(py, &element))
+            .collect::<PyResult<_>>()?;
+        let result = PyFrozenSet::new(py, frozen_elements.iter())?.into_any().unbind();
+        self.memo.insert(key, result.clone_ref(py));
+        Ok(result)
     }
 }
 

@@ -47,6 +47,7 @@ _config_dict_to_core_config_key: dict[str, str] = {
     'str_max_length': 'str_max_length',
     'str_min_length': 'str_min_length',
     'hide_input_in_errors': 'hide_input_in_errors',
+    'freeze_input_on_error': 'freeze_input_on_error',
     'coerce_numbers_to_str': 'coerce_numbers_to_str',
     'regex_engine': 'regex_engine',
     'validation_error_cause': 'validation_error_cause',
@@ -107,6 +108,7 @@ class ConfigWrapper:
     validate_return: bool
     protected_namespaces: tuple[str | Pattern[str], ...]
     hide_input_in_errors: bool
+    freeze_input_on_error: bool
     defer_build: bool
     plugin_settings: dict[str, object] | None
     schema_generator: type[GenerateSchema] | None
@@ -302,6 +304,7 @@ config_defaults = ConfigDict(
     validate_return=False,
     protected_namespaces=('model_validate', 'model_dump'),
     hide_input_in_errors=False,
+    freeze_input_on_error=False,
     json_encoders=None,
     defer_build=False,
     schema_generator=None,

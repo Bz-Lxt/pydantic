@@ -25,6 +25,7 @@ pub struct GeneratorValidator {
     max_length: Option<usize>,
     name: String,
     hide_input_in_errors: bool,
+    freeze_input_on_error: bool,
     validation_error_cause: bool,
 }
 
@@ -44,6 +45,9 @@ impl BuildValidator for GeneratorValidator {
         let hide_input_in_errors: bool = config
             .get_as(pyo3::intern!(schema.py(), "hide_input_in_errors"))?
             .unwrap_or(false);
+        let freeze_input_on_error: bool = config
+            .get_as(pyo3::intern!(schema.py(), "freeze_input_on_error"))?
+            .unwrap_or(false);
         let validation_error_cause: bool = config
             .get_as(pyo3::intern!(schema.py(), "validation_error_cause"))?
             .unwrap_or(false);
@@ -53,6 +57,7 @@ impl BuildValidator for GeneratorValidator {
             min_length: schema.get_as(pyo3::intern!(schema.py(), "min_length"))?,
             max_length: schema.get_as(pyo3::intern!(schema.py(), "max_length"))?,
             hide_input_in_errors,
+            freeze_input_on_error,
             validation_error_cause,
         })
         .into())
@@ -78,6 +83,7 @@ impl Validator for GeneratorValidator {
                 v.clone(),
                 state,
                 self.hide_input_in_errors,
+                self.freeze_input_on_error,
                 self.validation_error_cause,
             )
         });
@@ -88,6 +94,7 @@ impl Validator for GeneratorValidator {
             min_length: self.min_length,
             max_length: self.max_length,
             hide_input_in_errors: self.hide_input_in_errors,
+            freeze_input_on_error: self.freeze_input_on_error,
             validation_error_cause: self.validation_error_cause,
         };
         Ok(v_iterator.into_py_any(py)?)
@@ -106,6 +113,7 @@ struct ValidatorIterator {
     min_length: Option<usize>,
     max_length: Option<usize>,
     hide_input_in_errors: bool,
+    freeze_input_on_error: bool,
     validation_error_cause: bool,
 }
 
@@ -119,6 +127,7 @@ impl ValidatorIterator {
         let min_length = slf.min_length;
         let max_length = slf.max_length;
         let hide_input_in_errors = slf.hide_input_in_errors;
+        let freeze_input_on_error = slf.freeze_input_on_error;
         let validation_error_cause = slf.validation_error_cause;
         let Self {
             validator, iterator, ..
@@ -147,6 +156,7 @@ impl ValidatorIterator {
                                 None,
                                 hide_input_in_errors,
                                 validation_error_cause,
+                                freeze_input_on_error,
                             ));
                         }
                         match validator {
@@ -177,6 +187,7 @@ impl ValidatorIterator {
                                 None,
                                 hide_input_in_errors,
                                 validation_error_cause,
+                                freeze_input_on_error,
                             ));
                         }
                         Ok(None)
@@ -234,6 +245,7 @@ pub struct InternalValidator {
     pub(crate) fields_set_count: Option<usize>,
     validation_mode: InputType,
     hide_input_in_errors: bool,
+    freeze_input_on_error: bool,
     validation_error_cause: bool,
     cache_str: jiter::StringCacheMode,
 }
@@ -250,6 +262,7 @@ impl InternalValidator {
         validator: Arc<CombinedValidator>,
         state: &ValidationState,
         hide_input_in_errors: bool,
+        freeze_input_on_error: bool,
         validation_error_cause: bool,
     ) -> Self {
         let extra = state.extra();
@@ -270,6 +283,7 @@ impl InternalValidator {
             fields_set_count: state.fields_set_count,
             validation_mode: extra.input_type,
             hide_input_in_errors,
+            freeze_input_on_error,
             validation_error_cause,
             cache_str: extra.cache_str,
         }
@@ -314,6 +328,7 @@ impl InternalValidator {
                     outer_location,
                     self.hide_input_in_errors,
                     self.validation_error_cause,
+                    self.freeze_input_on_error,
                 )
             });
         self.exactness = state.exactness;
@@ -355,6 +370,7 @@ impl InternalValidator {
                 outer_location,
                 self.hide_input_in_errors,
                 self.validation_error_cause,
+                self.freeze_input_on_error,
             )
         });
         self.exactness = state.exactness;

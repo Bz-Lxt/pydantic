@@ -297,6 +297,7 @@ pub struct FunctionWrapValidator {
     field_name: Option<Py<PyString>>,
     info_arg: bool,
     hide_input_in_errors: bool,
+    freeze_input_on_error: bool,
     validation_error_cause: bool,
 }
 
@@ -312,6 +313,7 @@ impl BuildValidator for FunctionWrapValidator {
         let validator = build_validator(&schema.get_as_req(intern!(py, "schema"))?, config, definitions)?;
         let function_info = destructure_function_schema(schema)?;
         let hide_input_in_errors: bool = config.get_as(intern!(py, "hide_input_in_errors"))?.unwrap_or(false);
+        let freeze_input_on_error: bool = config.get_as(intern!(py, "freeze_input_on_error"))?.unwrap_or(false);
         let validation_error_cause: bool = config.get_as(intern!(py, "validation_error_cause"))?.unwrap_or(false);
         Ok(CombinedValidator::FunctionWrap(Self {
             validator,
@@ -324,6 +326,7 @@ impl BuildValidator for FunctionWrapValidator {
             field_name: function_info.field_name.clone(),
             info_arg: function_info.info_arg,
             hide_input_in_errors,
+            freeze_input_on_error,
             validation_error_cause,
         })
         .into())
@@ -372,6 +375,7 @@ impl Validator for FunctionWrapValidator {
                 self.validator.clone(),
                 state,
                 self.hide_input_in_errors,
+                self.freeze_input_on_error,
                 self.validation_error_cause,
             ),
         };
@@ -398,6 +402,7 @@ impl Validator for FunctionWrapValidator {
                 self.validator.clone(),
                 state,
                 self.hide_input_in_errors,
+                self.freeze_input_on_error,
                 self.validation_error_cause,
             ),
             updated_field_name: field_name.clone(),

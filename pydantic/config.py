@@ -795,6 +795,55 @@ class ConfigDict(TypedDict, total=False):
     ```
     """
 
+    freeze_input_on_error: bool
+    """
+    Whether to deep-freeze a validation error's input when the error is raised. Defaults to `False`.
+
+    By default, the `input` shown in a [`ValidationError`][pydantic_core.ValidationError] is the same
+    object that was passed to validation. If the caller mutates or reuses that object after the failed
+    validation, the contents of the error (e.g. when it is logged later) change as well:
+
+    ```python
+    from pydantic import BaseModel, ValidationError
+
+    class Model(BaseModel):
+        a: str
+
+    data = {'a': 123}
+    try:
+        Model.model_validate(data)
+    except ValidationError as e:
+        validation_error = e
+
+    data['a'] = 456  # mutate the original input after the failed validation
+    print(validation_error.errors()[0]['input'])
+    #> 456
+    ```
+
+    Set `freeze_input_on_error` to `True` to snapshot the input as immutable objects at the moment
+    validation fails. Mutable containers are converted recursively (`dict` to a read-only mapping
+    proxy, `list` to `tuple`, `set` to `frozenset`), reference cycles and shared sub-objects are
+    handled, and the frozen input stays stable under concurrent reads:
+
+    ```python
+    from pydantic import BaseModel, ConfigDict, ValidationError
+
+    class Model(BaseModel):
+        a: str
+        model_config = ConfigDict(freeze_input_on_error=True)
+
+    data = {'a': [123]}
+    try:
+        Model.model_validate(data)
+    except ValidationError as e:
+        validation_error = e
+
+    data['a'].append(456)  # the original input is mutated
+    print(validation_error.errors()[0]['input'])
+    #> (123,)
+    ```
+    """
+
     defer_build: bool
     """
     Whether to defer model validator and serializer construction until the first model validation. Defaults to False.

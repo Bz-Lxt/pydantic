@@ -5058,6 +5058,7 @@ self_schema = {
                                         'required': False,
                                     },
                                     'hide_input_in_errors': {'schema': {'type': 'bool'}, 'required': False},
+                                    'freeze_input_on_error': {'schema': {'type': 'bool'}, 'required': False},
                                     'validation_error_cause': {'schema': {'type': 'bool'}, 'required': False},
                                     'coerce_numbers_to_str': {'schema': {'type': 'bool'}, 'required': False},
                                     'regex_engine': {
@@ -5272,6 +5273,7 @@ self_schema = {
                                         'required': False,
                                     },
                                     'hide_input_in_errors': {'schema': {'type': 'bool'}, 'required': False},
+                                    'freeze_input_on_error': {'schema': {'type': 'bool'}, 'required': False},
                                     'validation_error_cause': {'schema': {'type': 'bool'}, 'required': False},
                                     'coerce_numbers_to_str': {'schema': {'type': 'bool'}, 'required': False},
                                     'regex_engine': {
@@ -5503,6 +5505,7 @@ self_schema = {
                                         'required': False,
                                     },
                                     'hide_input_in_errors': {'schema': {'type': 'bool'}, 'required': False},
+                                    'freeze_input_on_error': {'schema': {'type': 'bool'}, 'required': False},
                                     'validation_error_cause': {'schema': {'type': 'bool'}, 'required': False},
                                     'coerce_numbers_to_str': {'schema': {'type': 'bool'}, 'required': False},
                                     'regex_engine': {

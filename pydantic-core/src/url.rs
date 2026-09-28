@@ -108,7 +108,7 @@ impl PyUrl {
                     Ok(name) => name,
                     Err(e) => return e,
                 };
-                ValidationError::from_val_error(py, name, InputType::Python, e, None, false, false)
+                ValidationError::from_val_error(py, name, InputType::Python, e, None, false, false, false)
             })?
             .cast_bound::<Self>(py)?
             .get()
@@ -344,7 +344,7 @@ impl PyMultiHostUrl {
                     Ok(name) => name,
                     Err(e) => return e,
                 };
-                ValidationError::from_val_error(py, name, InputType::Python, e, None, false, false)
+                ValidationError::from_val_error(py, name, InputType::Python, e, None, false, false, false)
             })?
             .cast_bound::<Self>(py)?
             .get()

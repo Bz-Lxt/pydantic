@@ -88,7 +88,7 @@ impl SchemaError {
             ValError::LineErrors(raw_errors) => {
                 let line_errors = match raw_errors
                     .into_iter()
-                    .map(|e| PyLineError::from_val_line_error(py, e))
+                    .map(|e| PyLineError::from_val_line_error(py, e, None))
                     .collect::<PyResult<_>>()
                 {
                     Ok(errors) => errors,

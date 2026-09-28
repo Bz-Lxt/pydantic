@@ -124,6 +124,7 @@ pub struct SchemaValidator {
     #[pyo3(get)]
     title: Py<PyAny>,
     hide_input_in_errors: bool,
+    freeze_input_on_error: bool,
     validation_error_cause: bool,
     cache_str: StringCacheMode,
 }
@@ -165,6 +166,7 @@ impl SchemaValidator {
             None => validator.get_name().into_py_any(py)?,
         };
         let hide_input_in_errors: bool = config.get_as(intern!(py, "hide_input_in_errors"))?.unwrap_or(false);
+        let freeze_input_on_error: bool = config.get_as(intern!(py, "freeze_input_on_error"))?.unwrap_or(false);
         let validation_error_cause: bool = config.get_as(intern!(py, "validation_error_cause"))?.unwrap_or(false);
         let cache_str: StringCacheMode = config
             .get_as(intern!(py, "cache_strings"))?
@@ -176,6 +178,7 @@ impl SchemaValidator {
             py_config,
             title,
             hide_input_in_errors,
+            freeze_input_on_error,
             validation_error_cause,
             cache_str,
         })
@@ -506,6 +509,7 @@ impl SchemaValidator {
             None,
             self.hide_input_in_errors,
             self.validation_error_cause,
+            self.freeze_input_on_error,
         )
     }
 }

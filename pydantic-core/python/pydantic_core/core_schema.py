@@ -73,6 +73,8 @@ class CoreConfig(TypedDict, total=False):
             in float fields. Default is 'null'.
         val_json_bytes: The validation option for `bytes` values, complementing ser_json_bytes. Default is 'utf8'.
         hide_input_in_errors: Whether to hide input data from `ValidationError` representation.
+        freeze_input_on_error: Whether to deep-freeze error inputs when a validation error is raised, so that later
+            mutation or reuse of the input containers does not change the error's contents. Default is `False`.
         validation_error_cause: Whether to add user-python excs to the __cause__ of a ValidationError.
             Requires exceptiongroup backport pre Python 3.11.
         coerce_numbers_to_str: Whether to enable coercion of any `Number` type to `str` (not applicable in `strict` mode).
@@ -117,6 +119,7 @@ class CoreConfig(TypedDict, total=False):
     val_json_bytes: Literal['utf8', 'base64', 'hex']  # default: 'utf8'
     # used to hide input data from ValidationError repr
     hide_input_in_errors: bool
+    freeze_input_on_error: bool  # default: False
     validation_error_cause: bool  # default: False
     coerce_numbers_to_str: bool  # default: False
     regex_engine: Literal['rust-regex', 'python-re']  # default: 'rust-regex'
